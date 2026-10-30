@@ -1,0 +1,12 @@
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+cache/
+f1_cache/
+.fastf1-cache/
+.env
+.env.*
+.vscode/
+*.log

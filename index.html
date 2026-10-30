@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>F1 Replay</title>
+</head>
+<body>
+
+<div style="font-family:sans-serif; color:#ccc; margin-bottom:10px;">
+  <select id="yearSelect">
+    <option value="">Year</option>
+  </select>
+  <select id="gpSelect" disabled>
+    <option value="">Grand Prix</option>
+  </select>
+  <select id="sessionSelect" style="color:#000;">
+    <option value="R">Race</option>
+    <option value="Q">Qualifying</option>
+    <option value="FP1">Practice 1</option>
+    <option value="FP2">Practice 2</option>
+    <option value="FP3">Practice 3</option>
+    <option value="Sprint">Sprint</option>
+    <option value="SQ">Sprint Qualifying</option>
+  </select>
+  <button id="loadBtn" disabled>Load Replay</button>
+  <span id="status" style="margin-left:10px;"></span>
+</div>
+
+<canvas id="track" width="800" height="600" style="background:#111"></canvas>
+<div style="margin-top:10px; font-family:sans-serif; color:#ccc;">
+  <button id="playBtn" disabled>Play</button>
+  <input id="scrub" type="range" min="0" max="1000" value="0" style="width:600px;">
+  <span id="time">0.00s</span>
+</div>
+
+<script>
+const canvas = document.getElementById('track');
+const ctx = canvas.getContext('2d');
+const playBtn = document.getElementById('playBtn');
+const scrub = document.getElementById('scrub');
+const timeLabel = document.getElementById('time');
+const yearSelect = document.getElementById('yearSelect');
+const gpSelect = document.getElementById('gpSelect');
+const sessionSelect = document.getElementById('sessionSelect');
+const loadBtn = document.getElementById('loadBtn');
+const statusEl = document.getElementById('status');
+
+let raceData = {};
+let drivers = [];
+let minX, maxX, minY, maxY, minT, maxT;
+let currentTime = 0;
+let playing = false;
+
+// populate years — FastF1 telemetry is reliable from 2018 onward
+const currentYear = new Date().getFullYear();
+for (let y = currentYear; y >= 2018; y--) {
+  const opt = document.createElement('option');
+  opt.value = y; opt.textContent = y;
+  yearSelect.appendChild(opt);
+}
+
+function minMax(arr) {
+  let min = Infinity, max = -Infinity;
+  for (const v of arr) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return [min, max];
+}
+
+function toCanvas(x, y) {
+  const pad = 40;
+  const cx = pad + (x - minX) / (maxX - minX) * (canvas.width - 2 * pad);
+  const cy = canvas.height - (pad + (y - minY) / (maxY - minY) * (canvas.height - 2 * pad));
+  return [cx, cy];
+}
+
+function nearestSample(arr, t) {
+  let lo = 0, hi = arr.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid].t < t) lo = mid + 1; else hi = mid;
+  }
+  if (lo > 0 && Math.abs(arr[lo - 1].t - t) < Math.abs(arr[lo].t - t)) return arr[lo - 1];
+  return arr[lo];
+}
+
+function drawTrackOutline() {
+  const ref = raceData[drivers[0]];
+  ctx.strokeStyle = '#444';
+  ctx.beginPath();
+  ref.forEach((p, i) => {
+    const [cx, cy] = toCanvas(p.X, p.Y);
+    i === 0 ? ctx.moveTo(cx, cy) : ctx.lineTo(cx, cy);
+  });
+  ctx.stroke();
+}
+
+function renderFrame(t) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawTrackOutline();
+  drivers.forEach(code => {
+    const sample = nearestSample(raceData[code], t);
+    if (!sample) return;
+    const [cx, cy] = toCanvas(sample.X, sample.Y);
+    ctx.fillStyle = sample.Brake ? 'red' : 'lime';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ccc';
+    ctx.font = '10px sans-serif';
+    ctx.fillText(code, cx + 6, cy - 6);
+  });
+  timeLabel.textContent = t.toFixed(1) + 's';
+  scrub.value = Math.round((t - minT) / (maxT - minT) * 1000);
+}
+
+function tick() {
+  if (!playing) return;
+  currentTime += 0.1;
+  if (currentTime >= maxT) {
+    currentTime = maxT;
+    playing = false;
+    playBtn.textContent = 'Play';
+    renderFrame(currentTime);
+    return;
+  }
+  renderFrame(currentTime);
+  setTimeout(() => requestAnimationFrame(tick), 30);
+}
+
+playBtn.addEventListener('click', () => {
+  playing = !playing;
+  playBtn.textContent = playing ? 'Pause' : 'Play';
+  if (playing) tick();
+});
+
+scrub.addEventListener('input', () => {
+  playing = false;
+  playBtn.textContent = 'Play';
+  currentTime = minT + (scrub.value / 1000) * (maxT - minT);
+  renderFrame(currentTime);
+});
+
+yearSelect.addEventListener('change', () => {
+  gpSelect.innerHTML = '<option value="">Grand Prix</option>';
+  gpSelect.disabled = true;
+  loadBtn.disabled = true;
+  if (!yearSelect.value) return;
+
+  statusEl.textContent = 'Loading calendar…';
+  fetch(`http://localhost:8000/calendar/${yearSelect.value}`)
+    .then(r => r.json())
+    .then(events => {
+      events.forEach(ev => {
+        const opt = document.createElement('option');
+        opt.value = ev.EventName;
+        opt.textContent = `Rd ${ev.RoundNumber} — ${ev.EventName}`;
+        gpSelect.appendChild(opt);
+      });
+      gpSelect.disabled = false;
+      statusEl.textContent = '';
+    })
+    .catch(() => { statusEl.textContent = 'Failed to load calendar.'; });
+});
+
+gpSelect.addEventListener('change', () => {
+  loadBtn.disabled = !gpSelect.value;
+});
+
+loadBtn.addEventListener('click', () => {
+  playing = false;
+  playBtn.disabled = true;
+  playBtn.textContent = 'Play';
+  loadBtn.disabled = true;
+  statusEl.textContent = 'Loading session data — this can take a while…';
+
+  const year = yearSelect.value;
+  const gp = encodeURIComponent(gpSelect.value);
+  const sess = sessionSelect.value;
+
+  fetch(`http://localhost:8000/session/${year}/${gp}/${sess}`)
+    .then(async r => {
+      if (!r.ok) {
+        const err = await r.json();
+        throw new Error(err.detail || 'Unknown error');
+      }
+      return r.json();
+    })
+    .then(json => {
+      raceData = json;
+      drivers = Object.keys(raceData);
+
+      let allX = [], allY = [], allT = [];
+      drivers.forEach(code => {
+        raceData[code].forEach(p => { allX.push(p.X); allY.push(p.Y); allT.push(p.t); });
+      });
+      [minX, maxX] = minMax(allX);
+      [minY, maxY] = minMax(allY);
+      [minT, maxT] = minMax(allT);
+      currentTime = minT;
+
+      playBtn.disabled = false;
+      loadBtn.disabled = false;
+      statusEl.textContent = `Loaded ${drivers.length} drivers.`;
+      renderFrame(currentTime);
+    })
+    .catch(err => {
+      loadBtn.disabled = false;
+      statusEl.textContent = 'Error: ' + err.message;
+    });
+});
+</script>
+</body>
+</html>
